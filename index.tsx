@@ -11,6 +11,7 @@ import {styleMap} from 'lit/directives/style-map.js';
 
 import {
   GoogleGenAI,
+  MusicGenerationMode,
   type LiveMusicGenerationConfig,
   type LiveMusicServerMessage,
   type LiveMusicSession,
@@ -48,20 +49,20 @@ function throttle(func: (...args: unknown[]) => void, delay: number) {
 const PROMPT_TEXT_PRESETS = [
   'Bossa Nova',
   'Minimal Techno',
+  'Cumbia',
+  'Reggaeton',
   'Drum and Bass',
   'Post Punk',
   'Shoegaze',
   'Funk',
+  'Son Montuno',
+  'Salsa',
+  'Rock en Español',
   'Chiptune',
   'Lush Strings',
   'Sparkling Arpeggios',
   'Staccato Rhythms',
   'Punchy Kick',
-  'Dubstep',
-  'K Pop',
-  'Neo Soul',
-  'Trip Hop',
-  'Thrash',
 ];
 
 const COLORS = [
@@ -422,6 +423,41 @@ export class PlayPauseButton extends IconButton {
       return this.renderLoading();
     } else {
       return this.renderPlay();
+    }
+  }
+}
+
+@customElement('record-button')
+export class RecordButton extends IconButton {
+  @property({type: Boolean}) isRecording = false;
+
+  static override styles = [
+    IconButton.styles,
+    css`
+      .stop-icon {
+        animation: pulse 1.5s infinite;
+      }
+      @keyframes pulse {
+        0% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.1);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+    `,
+  ];
+
+  override renderIcon() {
+    if (this.isRecording) {
+      // Render stop icon (a square)
+      return svg`<rect class="stop-icon" x="55" y="44" width="30" height="30" rx="4" fill="#ff4141" />`;
+    } else {
+      // Render record icon (a circle)
+      return svg`<circle cx="70" cy="59" r="15" fill="#ff4141" />`;
     }
   }
 }
@@ -937,7 +973,8 @@ class SettingsController extends LitElement {
     temperature: 1.1,
     topK: 40,
     guidance: 4.0,
-    musicGenerationMode: 'QUALITY',
+    // FIX: Use MusicGenerationMode enum instead of string literal to match the expected type.
+    musicGenerationMode: MusicGenerationMode.QUALITY,
   };
 
   @state() private config: LiveMusicGenerationConfig = this.defaultConfig;
@@ -1327,6 +1364,36 @@ class PromptDj extends LitElement {
     #settings-container {
       flex: 1;
       margin: 2vmin 0 1vmin 0;
+      width: 100%;
+      max-width: 800px;
+    }
+    .pads-container {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2vmin;
+      margin-bottom: 2vmin;
+      width: 100%;
+      max-width: 50vmin;
+    }
+    .pad {
+      aspect-ratio: 1;
+      background-color: #2a2a2a;
+      border: 2px solid #111;
+      border-radius: 5px;
+      cursor: pointer;
+      color: #ccc;
+      font-size: 1.5vmin;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      transition:
+        background-color 0.1s,
+        transform 0.1s;
+    }
+    .pad:active {
+      background-color: #5200ff;
+      transform: scale(0.95);
     }
     .playback-container {
       display: flex;
@@ -1337,7 +1404,8 @@ class PromptDj extends LitElement {
     play-pause-button,
     add-prompt-button,
     reset-button,
-    examples-button {
+    examples-button,
+    record-button {
       width: 12vmin;
       flex-shrink: 0;
     }
@@ -1368,6 +1436,10 @@ class PromptDj extends LitElement {
   @property({type: Object})
   private filteredPrompts = new Set<string>();
   private connectionError = true;
+  @state() private isRecording = false;
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+  private mediaStreamDestination: MediaStreamAudioDestinationNode | null = null;
 
   @query('play-pause-button') private playPauseButton!: PlayPauseButton;
   @query('toast-message') private toastMessage!: ToastMessage;
@@ -1378,7 +1450,117 @@ class PromptDj extends LitElement {
     this.prompts = prompts;
     this.nextPromptId = this.prompts.size;
     this.outputNode.connect(this.audioContext.destination);
+    this.outputNode.gain.value = 0;
   }
+
+  private drumSynth = {
+    play: (sound: 'kick' | 'snare' | 'hihat' | 'clap' | 'tom') => {
+      const time = this.audioContext.currentTime;
+      switch (sound) {
+        case 'kick': {
+          const osc = this.audioContext.createOscillator();
+          const gain = this.audioContext.createGain();
+          osc.connect(gain);
+          gain.connect(this.outputNode);
+          osc.frequency.setValueAtTime(150, time);
+          osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.3);
+          gain.gain.setValueAtTime(1, time);
+          gain.gain.exponentialRampToValueAtTime(0.01, time + 0.3);
+          osc.start(time);
+          osc.stop(time + 0.3);
+          break;
+        }
+        case 'snare': {
+          const noise = this.audioContext.createBufferSource();
+          const bufferSize = this.audioContext.sampleRate;
+          const buffer = this.audioContext.createBuffer(
+            1,
+            bufferSize,
+            bufferSize,
+          );
+          const output = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1;
+          }
+          noise.buffer = buffer;
+          const noiseFilter = this.audioContext.createBiquadFilter();
+          noiseFilter.type = 'highpass';
+          noiseFilter.frequency.value = 1000;
+          noise.connect(noiseFilter);
+          const noiseEnvelope = this.audioContext.createGain();
+          noiseFilter.connect(noiseEnvelope);
+          noiseEnvelope.connect(this.outputNode);
+          noiseEnvelope.gain.setValueAtTime(1, time);
+          noiseEnvelope.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+          noise.start(time);
+          noise.stop(time + 0.2);
+          break;
+        }
+        case 'hihat': {
+          const noise = this.audioContext.createBufferSource();
+          const bufferSize = this.audioContext.sampleRate * 0.1;
+          const buffer = this.audioContext.createBuffer(
+            1,
+            bufferSize,
+            this.audioContext.sampleRate,
+          );
+          const output = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1;
+          }
+          noise.buffer = buffer;
+          const noiseFilter = this.audioContext.createBiquadFilter();
+          noiseFilter.type = 'highpass';
+          noiseFilter.frequency.value = 7000;
+          noise.connect(noiseFilter);
+          const noiseEnvelope = this.audioContext.createGain();
+          noiseFilter.connect(noiseEnvelope);
+          noiseEnvelope.connect(this.outputNode);
+          noiseEnvelope.gain.setValueAtTime(1, time);
+          noiseEnvelope.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+          noise.start(time);
+          noise.stop(time + 0.05);
+          break;
+        }
+        case 'clap': {
+          const noise = this.audioContext.createBufferSource();
+          const bufferSize = this.audioContext.sampleRate * 0.2;
+          const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+          const output = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1;
+          }
+          noise.buffer = buffer;
+          const filter = this.audioContext.createBiquadFilter();
+          filter.type = 'bandpass';
+          filter.frequency.value = 1500;
+          noise.connect(filter);
+          const envelope = this.audioContext.createGain();
+          filter.connect(envelope);
+          envelope.connect(this.outputNode);
+          envelope.gain.setValueAtTime(1, time);
+          envelope.gain.linearRampToValueAtTime(0, time + 0.15);
+          noise.start(time);
+          noise.stop(time + 0.15);
+          break;
+        }
+        case 'tom': {
+          const osc = this.audioContext.createOscillator();
+          const gain = this.audioContext.createGain();
+          osc.type = 'sine';
+          osc.connect(gain);
+          gain.connect(this.outputNode);
+          osc.frequency.setValueAtTime(250, time);
+          osc.frequency.exponentialRampToValueAtTime(100, time + 0.2);
+          gain.gain.setValueAtTime(0.8, time);
+          gain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+          osc.start(time);
+          osc.stop(time + 0.2);
+          break;
+        }
+      }
+    },
+  };
 
   override async firstUpdated() {
     await this.connectToSession();
@@ -1421,7 +1603,9 @@ class PromptDj extends LitElement {
               this.nextStartTime =
                 this.audioContext.currentTime + this.bufferTime;
               setTimeout(() => {
-                this.playbackState = 'playing';
+                if (this.playbackState === 'loading') {
+                    this.playbackState = 'playing';
+                }
               }, this.bufferTime * 1000);
             }
 
@@ -1541,21 +1725,19 @@ class PromptDj extends LitElement {
   private pauseAudio() {
     this.session.pause();
     this.playbackState = 'paused';
-    this.outputNode.gain.setValueAtTime(1, this.audioContext.currentTime);
+    this.outputNode.gain.cancelScheduledValues(this.audioContext.currentTime);
     this.outputNode.gain.linearRampToValueAtTime(
       0,
       this.audioContext.currentTime + 0.1,
     );
     this.nextStartTime = 0;
-    this.outputNode = this.audioContext.createGain();
-    this.outputNode.connect(this.audioContext.destination);
   }
 
   private loadAudio() {
     this.audioContext.resume();
     this.session.play();
     this.playbackState = 'loading';
-    this.outputNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+    this.outputNode.gain.cancelScheduledValues(this.audioContext.currentTime);
     this.outputNode.gain.linearRampToValueAtTime(
       1,
       this.audioContext.currentTime + 0.1,
@@ -1565,12 +1747,66 @@ class PromptDj extends LitElement {
   private stopAudio() {
     this.session.stop();
     this.playbackState = 'stopped';
-    this.outputNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+    this.outputNode.gain.cancelScheduledValues(this.audioContext.currentTime);
     this.outputNode.gain.linearRampToValueAtTime(
-      1,
+      0,
       this.audioContext.currentTime + 0.1,
     );
     this.nextStartTime = 0;
+  }
+
+  private handleRecord() {
+    if (this.isRecording) {
+      this.stopRecording();
+    } else {
+      this.startRecording();
+    }
+  }
+
+  private startRecording() {
+    if (!this.mediaStreamDestination) {
+      this.mediaStreamDestination =
+        this.audioContext.createMediaStreamDestination();
+      this.outputNode.connect(this.mediaStreamDestination);
+    }
+
+    this.recordedChunks = [];
+    try {
+      this.mediaRecorder = new MediaRecorder(this.mediaStreamDestination.stream);
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.recordedChunks.push(event.data);
+        }
+      };
+
+      this.mediaRecorder.onstop = () => {
+        const blob = new Blob(this.recordedChunks, {type: 'audio/webm'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = `prompt-dj-session.webm`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      };
+
+      this.mediaRecorder.start();
+      this.isRecording = true;
+      this.toastMessage.show('Recording started...');
+    } catch (e) {
+      console.error('Error starting recorder:', e);
+      this.toastMessage.show('Could not start recording.');
+    }
+  }
+
+  private stopRecording() {
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.mediaRecorder.stop();
+      this.isRecording = false;
+      this.toastMessage.show('Recording stopped. Download will begin shortly.');
+    }
   }
 
   private async handleAddPrompt() {
@@ -1668,40 +1904,31 @@ class PromptDj extends LitElement {
   }
 
   private async handleLoadExamples() {
-    const examplePromptsTexts = [
-      'Chillhop',
-      'Epic Orchestral',
-      '80s Synthwave',
-      'Acoustic Folk',
+    const examplePrompts = [
+      {text: 'Reggaeton, dembow drums', weight: 1.0},
+      {text: 'Chillhop lo-fi beats', weight: 0.7},
+      {text: 'Cumbia sonidera, rebajada', weight: 0.0},
+      {text: 'Epic Orchestral, cinematic', weight: 0.0},
     ];
 
     const newPrompts = new Map<string, Prompt>();
     const usedColors: string[] = [];
 
-    for (let i = 0; i < examplePromptsTexts.length; i++) {
-      const text = examplePromptsTexts[i];
+    for (let i = 0; i < examplePrompts.length; i++) {
+      const {text, weight} = examplePrompts[i];
       const color = getUnusedRandomColor(usedColors);
       usedColors.push(color);
       const promptId = `prompt-${i}`;
       newPrompts.set(promptId, {
         promptId: promptId,
         text,
-        weight: 0,
+        weight,
         color,
       });
     }
 
-    // Activate first two prompts by giving them weight
-    const promptsToActivate = [...newPrompts.values()];
-    if (promptsToActivate.length > 0) {
-      promptsToActivate[0].weight = 1;
-    }
-    if (promptsToActivate.length > 1) {
-      promptsToActivate[1].weight = 0.7;
-    }
-
     this.prompts = newPrompts;
-    this.nextPromptId = examplePromptsTexts.length;
+    this.nextPromptId = examplePrompts.length;
 
     this.dispatchPromptsChange();
 
@@ -1731,10 +1958,23 @@ class PromptDj extends LitElement {
         <settings-controller
           @settings-changed=${this.updateSettings}></settings-controller>
       </div>
+      <div class="pads-container">
+        <div class="pad" @click=${() => this.drumSynth.play('kick')}>Kick</div>
+        <div class="pad" @click=${() => this.drumSynth.play('snare')}>Snare</div>
+        <div class="pad" @click=${() => this.drumSynth.play('clap')}>Clap</div>
+        <div class="pad" @click=${() => this.drumSynth.play('hihat')}>Hi-Hat</div>
+        <div class="pad" @click=${() => this.drumSynth.play('tom')}>Tom 1</div>
+        <div class="pad" @click=${() => this.drumSynth.play('tom')}>Tom 2</div>
+        <div class="pad" @click=${() => this.drumSynth.play('tom')}>Tom 3</div>
+        <div class="pad" @click=${() => this.drumSynth.play('hihat')}>Hi-Hat O</div>
+      </div>
       <div class="playback-container">
         <play-pause-button
           @click=${this.handlePlayPause}
           .playbackState=${this.playbackState}></play-pause-button>
+        <record-button 
+            @click=${this.handleRecord}
+            .isRecording=${this.isRecording}></record-button>
         <reset-button @click=${this.handleReset}></reset-button>
         <examples-button @click=${this.handleLoadExamples}></examples-button>
       </div>
@@ -1825,6 +2065,7 @@ declare global {
     'settings-controller': SettingsController;
     'add-prompt-button': AddPromptButton;
     'play-pause-button': PlayPauseButton;
+    'record-button': RecordButton;
     'reset-button': ResetButton;
     'examples-button': ExamplesButton;
     'weight-slider': WeightSlider;
